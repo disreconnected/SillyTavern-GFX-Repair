@@ -1,0 +1,12 @@
+{
+    "display_name": "GFX & Details Repair",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Codex",
+    "version": "1.0.0",
+    "minimum_client_version": "1.18.0",
+    "auto_update": false
+}

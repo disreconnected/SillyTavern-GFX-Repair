@@ -1,0 +1,14 @@
+{
+    "name": "sillytavern-gfx-repair",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Preset-agnostic GFX and details structure repair for SillyTavern.",
+    "scripts": {
+        "test": "node --test",
+        "check": "node --check index.js && node --check lib/repair-engine.js"
+    },
+    "engines": {
+        "node": ">=20"
+    }
+}

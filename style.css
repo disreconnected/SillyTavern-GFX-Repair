@@ -1,0 +1,32 @@
+#gfx_repair_status {
+    margin-top: 0.5rem;
+    white-space: pre-wrap;
+}
+
+#gfx_repair_templates {
+    box-sizing: border-box;
+    min-height: 5rem;
+    resize: vertical;
+    width: 100%;
+}
+
+.gfx-repair-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+:where(.mes_text details[data-gfx-repair-panel="true"]:not([style])) {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #222) 82%, transparent);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor, #aaa) 25%, transparent);
+    border-radius: 0.35rem;
+    margin: 0.4rem 0;
+    padding: 0.25rem 0.55rem 0.45rem;
+}
+
+:where(.mes_text details[data-gfx-repair-panel="true"] > summary) {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.25rem 0;
+}

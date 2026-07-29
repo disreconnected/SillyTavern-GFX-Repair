@@ -1,0 +1,273 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+    discoverTemplates,
+    repairMessage,
+    TemplateRegistry,
+} from '../lib/repair-engine.js';
+
+function registryFrom(...sources) {
+    const registry = new TemplateRegistry();
+    sources.forEach((source, index) => registry.addFromText(source, `fixture-${index}`));
+    return registry;
+}
+
+const plotMomentumTemplate = `
+<details>
+<summary>Plot Momentum</summary>
+- NPC_Agenda: [goal]
+- Physics: [positions]
+- Scene_Pacing: [pace]
+</details>`;
+
+const internalStatesTemplate = `
+<!-- GFX_START -->
+<internal_states>
+<details>
+  <summary>🎬 INTERNAL STATES (Turn: [ct])</summary>
+  <details>
+    <summary>👤 NPC AGENDAS</summary>
+    - <b>[NPC]</b> | Agenda: [task]
+  </details>
+  <details>
+    <summary>📜 QUESTS</summary>
+    - <b>Main</b> | Objective: [objective]
+  </details>
+  <details>
+    <summary>🌌 PHYSICS, ENGINE & WORLD</summary>
+    - Env: [environment]
+    - Physics: [positions]
+  </details>
+</details>
+</internal_states>
+<!-- GFX_END -->`;
+
+test('discovers nested templates and deduplicates fingerprints', () => {
+    const definitions = discoverTemplates(`${internalStatesTemplate}\n${internalStatesTemplate}`, 'preset');
+    assert.equal(definitions.length, 1);
+    assert.equal(definitions[0].root.label, '🎬 INTERNAL STATES (Turn: [ct])');
+    assert.deepEqual(
+        definitions[0].root.children.map((child) => child.label),
+        ['👤 NPC AGENDAS', '📜 QUESTS', '🌌 PHYSICS, ENGINE & WORLD'],
+    );
+});
+
+test('leaves already-valid details markup unchanged', () => {
+    const registry = registryFrom(plotMomentumTemplate);
+    const result = repairMessage(plotMomentumTemplate, registry);
+    assert.equal(result.changed, false);
+    assert.equal(result.text, plotMomentumTemplate);
+});
+
+test('restores a learned FF4 Plot Momentum panel and leaves COLORS outside', () => {
+    const registry = registryFrom(plotMomentumTemplate);
+    const malformed = `Narrative ending.
+
+---
+
+Plot Momentum
+- NPC_Agenda: Advance the scene
+- Physics: Character beside the door
+- Scene_Pacing: Steady
+- Selected_Path: A
+
+[COLORS:Alex=#fff]`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal(result.changed, true);
+    assert.match(result.text, /<details>\s*<summary>Plot Momentum<\/summary>/);
+    assert.match(result.text, /<\/details>\s*\[COLORS:Alex=#fff\]$/);
+    assert.ok(result.actions.some((action) => action.type === 'restore-learned-details'));
+});
+
+test('restores nested FF5 panels using a dynamic turn label', () => {
+    const registry = registryFrom(internalStatesTemplate);
+    const malformed = `Narrative.
+
+<!-- GFX_START -->
+
+🎬 INTERNAL STATES (Turn: 17)
+
+👤 NPC AGENDAS
+- Elara | Agenda: File report
+
+📜 QUESTS
+- Main | Objective: Wait
+
+🌌 PHYSICS, ENGINE & WORLD
+- Env: Tower
+- Physics: Seated
+
+<!-- GFX_END -->`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 4);
+    assert.match(result.text, /<summary>🎬 INTERNAL STATES \(Turn: 17\)<\/summary>/);
+    assert.match(result.text, /<summary>👤 NPC AGENDAS<\/summary>/);
+    assert.match(result.text, /<summary>📜 QUESTS<\/summary>/);
+    assert.match(result.text, /<summary>🌌 PHYSICS, ENGINE & WORLD<\/summary>/);
+    assert.equal((result.text.match(/GFX_START/g) ?? []).length, 1);
+    assert.equal((result.text.match(/GFX_END/g) ?? []).length, 1);
+});
+
+test('repairs only the learned panel when another GFX block is present', () => {
+    const registry = registryFrom(internalStatesTemplate);
+    const terminal = `<!-- GFX_START -->
+<div style="font-family:monospace">&gt; ACCESS GRANTED</div>
+<!-- GFX_END -->`;
+    const malformed = `${terminal}
+
+Narrative.
+
+<!-- GFX_START -->
+🎬 INTERNAL STATES (Turn: 2)
+👤 NPC AGENDAS
+- NPC | Agenda: Move
+📜 QUESTS
+- Main | Objective: Follow
+🌌 PHYSICS, ENGINE & WORLD
+- Env: Hall
+- Physics: Standing
+<!-- GFX_END -->`;
+    const result = repairMessage(malformed, registry);
+
+    assert.ok(result.text.startsWith(terminal));
+    assert.equal((result.text.match(/GFX_START/g) ?? []).length, 2);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 4);
+});
+
+test('nests separately learned optional panels inside a hierarchical template', () => {
+    const optionalTemplate = '<details><summary>📓 GM\'S NOTEBOOK</summary>- [R] Note</details>';
+    const registry = registryFrom(internalStatesTemplate, optionalTemplate);
+    const malformed = `<!-- GFX_START -->
+🎬 INTERNAL STATES (Turn: 4)
+👤 NPC AGENDAS
+- NPC | Agenda: Move
+📓 GM'S NOTEBOOK
+- Reminder: Preserve this
+📜 QUESTS
+- Main | Objective: Continue
+🌌 PHYSICS, ENGINE & WORLD
+- Env: Room
+- Physics: Seated
+<!-- GFX_END -->`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 5);
+    assert.match(result.text, /<summary>📓 GM'S NOTEBOOK<\/summary>/);
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
+test('removes a Markdown fence around structural HTML', () => {
+    const fenced = `Before
+
+\`\`\`html
+<details><summary>Tracker</summary>
+- State: Ready
+</details>
+\`\`\``;
+    const result = repairMessage(fenced, new TemplateRegistry());
+
+    assert.equal(result.changed, true);
+    assert.doesNotMatch(result.text, /```/);
+    assert.match(result.text, /<details><summary>Tracker<\/summary>/);
+});
+
+test('wraps an orphan summary and closes it at the end', () => {
+    const malformed = `<summary>Tracker</summary>
+- State: Ready`;
+    const result = repairMessage(malformed, new TemplateRegistry(), {
+        detectionMode: 'template-only',
+    });
+
+    assert.equal(result.text, `<details><summary>Tracker</summary>
+- State: Ready</details>`);
+    assert.ok(result.actions.some((action) => action.type === 'wrap-orphan-summary'));
+});
+
+test('closes an unclosed summary at its first line break', () => {
+    const malformed = `<details><summary>Tracker
+- State: Ready
+</details>`;
+    const result = repairMessage(malformed, new TemplateRegistry(), {
+        detectionMode: 'template-only',
+    });
+
+    assert.match(result.text, /<summary>Tracker<\/summary>\n- State: Ready/);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 1);
+    assert.equal((result.text.match(/<\/details>/g) ?? []).length, 1);
+});
+
+test('safe hybrid repairs an unknown structured tracker', () => {
+    const malformed = `A long narrative paragraph that finishes the scene and establishes enough leading content.
+
+---
+
+Unknown Scene Tracker
+- Agenda: Advance
+- Physics: Standing
+- Pacing: Steady
+- Choice: A`;
+    const result = repairMessage(malformed, new TemplateRegistry());
+
+    assert.match(result.text, /<details>\s*<summary>Unknown Scene Tracker<\/summary>/);
+    assert.ok(result.actions.some((action) => action.type === 'restore-heuristic-details'));
+});
+
+test('safe hybrid does not transform ordinary prose or headings', () => {
+    const prose = `Internal States
+
+This paragraph explains that details and summary tags are clickable in a browser.
+It is ordinary prose, not a structured tracker.`;
+    const result = repairMessage(prose, new TemplateRegistry());
+
+    assert.equal(result.changed, false);
+    assert.equal(result.text, prose);
+});
+
+test('does not balance details tags mentioned inside inline code', () => {
+    const explanation = 'Use `<details>` with `<summary>` to make a native collapsible panel.';
+    const result = repairMessage(explanation, new TemplateRegistry());
+
+    assert.equal(result.changed, false);
+    assert.equal(result.text, explanation);
+    assert.equal(discoverTemplates(explanation).length, 0);
+});
+
+test('inserts a missing GFX_END after a balanced HTML element', () => {
+    const malformed = `Narrative.
+<!-- GFX_START -->
+<div><div>STATUS</div></div>
+After`;
+    const result = repairMessage(malformed, new TemplateRegistry(), {
+        repairDetails: false,
+    });
+
+    assert.match(result.text, /<\/div>\n<!-- GFX_END -->\nAfter$/);
+    assert.ok(result.actions.some((action) => action.type === 'insert-gfx-end-after-html'));
+});
+
+test('preserves valid details attributes and inline styles', () => {
+    const styled = `<details class="custom" style="color:red"><summary style="font-weight:bold">Menu</summary>Body</details>`;
+    const result = repairMessage(styled, registryFrom(styled));
+
+    assert.equal(result.changed, false);
+    assert.equal(result.text, styled);
+});
+
+test('repair is idempotent', () => {
+    const registry = registryFrom(plotMomentumTemplate);
+    const malformed = `Narrative.
+
+Plot Momentum
+- NPC_Agenda: Advance
+- Physics: Doorway
+- Scene_Pacing: Steady`;
+    const first = repairMessage(malformed, registry);
+    const second = repairMessage(first.text, registry);
+
+    assert.equal(first.changed, true);
+    assert.equal(second.changed, false);
+    assert.equal(second.text, first.text);
+});
