@@ -81,9 +81,13 @@ Repair**.
 
 ### Install from a Git URL
 
-Once this project is hosted publicly, SillyTavern's third-party extension
-installer can use the repository URL. GitHub is not required for the extension
-itself; it is only a convenient distribution and update source.
+The public repository is:
+
+<https://github.com/disreconnected/SillyTavern-GFX-Repair>
+
+Use that repository URL in SillyTavern's third-party extension installer, or
+clone/download it and copy the folder manually. GitHub is not required for the
+extension itself; it is a convenient distribution and update source.
 
 ## Settings
 
