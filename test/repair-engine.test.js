@@ -81,6 +81,21 @@ Plot Momentum
     assert.ok(result.actions.some((action) => action.type === 'restore-learned-details'));
 });
 
+test('repairs a collapsed learned panel outside a GFX block', () => {
+    const malformed = `Narrative ending.
+
+---
+Plot Momentum- NPC_Agenda: Advance the scene
+ - Physics: Character beside the door
+ - Scene_Pacing: Steady
+
+[COLORS:Alex=#fff]`;
+    const result = repairMessage(malformed, registryFrom(plotMomentumTemplate));
+
+    assert.match(result.text, /<details>\s*<summary>Plot Momentum<\/summary>/);
+    assert.match(result.text, /Scene_Pacing: Steady[\s\S]*<\/details>\s*\[COLORS:Alex=#fff\]/);
+});
+
 test('restores nested FF5 panels using a dynamic turn label', () => {
     const registry = registryFrom(internalStatesTemplate);
     const malformed = `Narrative.
@@ -109,6 +124,28 @@ test('restores nested FF5 panels using a dynamic turn label', () => {
     assert.match(result.text, /<summary>🌌 PHYSICS, ENGINE & WORLD<\/summary>/);
     assert.equal((result.text.match(/GFX_START/g) ?? []).length, 1);
     assert.equal((result.text.match(/GFX_END/g) ?? []).length, 1);
+});
+
+test('repairs learned panels when the model concatenates headings and rows', () => {
+    const malformed = `<!-- GFX_START -->
+🎬 INTERNAL STATES (Turn: 18)👤 NPC AGENDAS -Xyl (Overseer) | Agenda: Report to King | Aware: Structural weak points
+ -Elara | Agenda: Deep Sleep | Aware: None
+
+📜 QUESTS -Main | Objective: Establish dominance over the Hive / 100%
+
+🌌 PHYSICS, ENGINE & WORLD - Env: Royal Nest, stabilized archway.
+ - Physics: Structural load data.
+<!-- GFX_END -->`;
+    const result = repairMessage(malformed, registryFrom(internalStatesTemplate));
+
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 4);
+    assert.match(result.text, /<summary>🎬 INTERNAL STATES \(Turn: 18\)<\/summary>/);
+    assert.match(result.text, /<summary>👤 NPC AGENDAS<\/summary>[\s\S]*Xyl \(Overseer\)/);
+    assert.match(result.text, /<summary>📜 QUESTS<\/summary>[\s\S]*Establish dominance/);
+    assert.match(result.text, /<summary>🌌 PHYSICS, ENGINE & WORLD<\/summary>[\s\S]*Structural load data/);
+    assert.equal((result.text.match(/GFX_START/g) ?? []).length, 1);
+    assert.equal((result.text.match(/GFX_END/g) ?? []).length, 1);
+    assert.equal(repairMessage(result.text, registryFrom(internalStatesTemplate)).changed, false);
 });
 
 test('repairs only the learned panel when another GFX block is present', () => {
