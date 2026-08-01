@@ -300,6 +300,29 @@ test('flattens unexpected nested details inside learned leaf panels', () => {
     assert.equal(repairMessage(result.text, registry).changed, false);
 });
 
+test('merges matching continuation details after a hierarchical panel', () => {
+    const registry = registryFrom(
+        internalStatesTemplate,
+        '<details><summary>🧠 INTERNAL THOUGHTS</summary>- [NPC] | Internal Thoughts: [thought]</details>',
+        '<details><summary>🌎 WORLD SIM</summary>- Active Table: [table]<br>- Roll: [roll]</details>',
+    );
+    const malformed = `<details><summary>🎬 INTERNAL STATES (Turn: 24)</summary>
+<details><summary>🧠 INTERNAL THOUGHTS</summary><br>-Xyl |</details>
+<details><summary>🌎 WORLD SIM</summary>-Active Table: Duo Table-</details></details>
+<details><summary>Internal Thoughts:</summary>The wall looks strong now.</details>
+<details><summary>World Sim</summary>Roll: 5-Event: MOOD_SWING</details>`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal(result.changed, true);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 3);
+    assert.doesNotMatch(result.text, /<summary>Internal Thoughts:<\/summary>/);
+    assert.doesNotMatch(result.text, /<summary>World Sim<\/summary>/);
+    assert.match(result.text, /<summary>🧠 INTERNAL THOUGHTS<\/summary>[\s\S]*Internal Thoughts:\s*The wall looks strong/);
+    assert.match(result.text, /<summary>🌎 WORLD SIM<\/summary>[\s\S]*World Sim\s*Roll: 5-Event: MOOD_SWING/);
+    assert.ok(result.actions.some((action) => action.type === 'merge-continuation-detail'));
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
 test('removes a Markdown fence around structural HTML', () => {
     const fenced = `Before
 

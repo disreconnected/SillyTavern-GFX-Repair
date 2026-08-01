@@ -38,6 +38,8 @@ normal SillyTavern regex and Markdown pipeline runs.
 - Unexpected nested `<details>` blocks inside a learned leaf panel are
   flattened into that panel's body (for example `World Sim` or `Internal
   Thoughts:` sub-blocks).
+- Matching continuation details immediately after a larger hierarchy are
+  merged back into their learned leaf panel.
 - Concatenated headings such as `INTERNAL STATES (Turn: 18)NPC AGENDAS`
   when the model omits line breaks.
 - Orphan, duplicated, or unclosed `details`/`summary` tags.
