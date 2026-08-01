@@ -1,6 +1,6 @@
 {
     "name": "sillytavern-gfx-repair",
-    "version": "1.0.1",
+    "version": "1.0.4",
     "private": true,
     "type": "module",
     "description": "Preset-agnostic GFX and details structure repair for SillyTavern.",

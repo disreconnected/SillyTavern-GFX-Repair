@@ -8,7 +8,7 @@ import {
 export default 'GfxDetailsRepair';
 
 const EXTENSION_KEY = 'gfxDetailsRepair';
-const EXTENSION_VERSION = '1.0.1';
+const EXTENSION_VERSION = '1.0.4';
 const context = SillyTavern.getContext();
 
 const defaultSettings = Object.freeze({

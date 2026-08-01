@@ -13,6 +13,23 @@ function registryFrom(...sources) {
     return registry;
 }
 
+function summaryDepths(source) {
+    const depths = new Map();
+    const tokens = /<details\b[^>]*>|<\/details\s*>|<summary\b[^>]*>([\s\S]*?)<\/summary\s*>/gi;
+    let depth = 0;
+    let match;
+    while ((match = tokens.exec(source)) !== null) {
+        if (/^<details/i.test(match[0])) {
+            depth++;
+        } else if (/^<\/details/i.test(match[0])) {
+            depth--;
+        } else {
+            depths.set(match[1], depth);
+        }
+    }
+    return depths;
+}
+
 const plotMomentumTemplate = `
 <details>
 <summary>Plot Momentum</summary>
@@ -29,6 +46,10 @@ const internalStatesTemplate = `
   <details>
     <summary>👤 NPC AGENDAS</summary>
     - <b>[NPC]</b> | Agenda: [task]
+  </details>
+  <details>
+    <summary>🏳️ FACTIONS</summary>
+    - <b>Hive</b> | Goal: [goal]
   </details>
   <details>
     <summary>📜 QUESTS</summary>
@@ -49,7 +70,7 @@ test('discovers nested templates and deduplicates fingerprints', () => {
     assert.equal(definitions[0].root.label, '🎬 INTERNAL STATES (Turn: [ct])');
     assert.deepEqual(
         definitions[0].root.children.map((child) => child.label),
-        ['👤 NPC AGENDAS', '📜 QUESTS', '🌌 PHYSICS, ENGINE & WORLD'],
+        ['👤 NPC AGENDAS', '🏳️ FACTIONS', '📜 QUESTS', '🌌 PHYSICS, ENGINE & WORLD'],
     );
 });
 
@@ -174,7 +195,7 @@ Narrative.
     assert.equal((result.text.match(/<details>/g) ?? []).length, 4);
 });
 
-test('nests separately learned optional panels inside a hierarchical template', () => {
+test('keeps separately learned optional panels as sibling panels', () => {
     const optionalTemplate = '<details><summary>📓 GM\'S NOTEBOOK</summary>- [R] Note</details>';
     const registry = registryFrom(internalStatesTemplate, optionalTemplate);
     const malformed = `<!-- GFX_START -->
@@ -193,6 +214,112 @@ test('nests separately learned optional panels inside a hierarchical template', 
 
     assert.equal((result.text.match(/<details>/g) ?? []).length, 5);
     assert.match(result.text, /<summary>📓 GM'S NOTEBOOK<\/summary>/);
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
+test('promotes optional learned panels out of the wrong parent details block', () => {
+    const registry = registryFrom(
+        internalStatesTemplate,
+        '<details><summary>💚 BONDS</summary>- Hive | BOND: 4</details>',
+        '<details><summary>🔫 CHEKHOV\'S GUN</summary>- Active: None</details>',
+        '<details><summary>🧠 INTERNAL THOUGHTS</summary>- Xyl | Thought: Ready</details>',
+    );
+    const malformed = `<details>
+<summary>🎬 INTERNAL STATES (Turn: 22)</summary>
+<details>
+<summary>🏳️ FACTIONS</summary>
+-The Hive | Goal: Survive
+💚 BONDS-The Hive | BOND: 4
+</details>
+<details>
+<summary>📜 QUESTS</summary>
+-Main | Objective: Continue
+🔫 CHEKHOV'S GUN- Active: None
+🧠 INTERNAL THOUGHTS-Xyl | Thought: Ready
+</details>
+</details>`;
+    const result = repairMessage(malformed, registry);
+    const summaries = [...result.text.matchAll(/<summary>([\s\S]*?)<\/summary>/gi)].map((match) => match[1]);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(summaries, [
+        '🎬 INTERNAL STATES (Turn: 22)',
+        '🏳️ FACTIONS',
+        '💚 BONDS',
+        '📜 QUESTS',
+        "🔫 CHEKHOV'S GUN",
+        '🧠 INTERNAL THOUGHTS',
+    ]);
+    assert.match(result.text, /<\/details>\s*<details>\s*<summary>💚 BONDS<\/summary>/);
+    assert.match(result.text, /<\/details>\s*<details>\s*<summary>🔫 CHEKHOV'S GUN<\/summary>/);
+    const depths = summaryDepths(result.text);
+    assert.equal(depths.get('🏳️ FACTIONS'), 2);
+    assert.equal(depths.get('💚 BONDS'), 2);
+    assert.equal(depths.get("🔫 CHEKHOV'S GUN"), 2);
+    assert.equal(depths.get('🧠 INTERNAL THOUGHTS'), 2);
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
+test('promotes optional panels after balancing an unclosed parent', () => {
+    const registry = registryFrom(
+        internalStatesTemplate,
+        '<details><summary>💚 BONDS</summary>- Hive | BOND: 4</details>',
+    );
+    const malformed = `<details>
+<summary>🎬 INTERNAL STATES (Turn: 22)</summary>
+<details>
+<summary>🏳️ FACTIONS</summary>
+-The Hive | Goal: Survive
+</details>
+💚 BONDS-The Hive | BOND: 4`;
+    const result = repairMessage(malformed, registry, { detectionMode: 'template-only' });
+    const depths = summaryDepths(result.text);
+
+    assert.equal(depths.get('💚 BONDS'), 2);
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
+test('flattens unexpected nested details inside learned leaf panels', () => {
+    const registry = registryFrom(
+        '<details><summary>🧠 INTERNAL THOUGHTS</summary>- [NPC] | Internal Thoughts: [thought]</details>',
+        '<details><summary>🌎 WORLD SIM</summary>- Active Table: [table]<br>- Roll: [roll]</details>',
+    );
+    const malformed = `<details><summary>🧠 INTERNAL THOUGHTS</summary><br>-Xyl |
+<details><summary>Internal Thoughts:</summary>The armor is tough. Tougher than ours.</details></details>
+<details><summary>🌎 WORLD SIM</summary>-Active Table: Duo Table-
+<details><summary>World Sim</summary>Roll: 9-Event: MEMORY_TRIGGER</details></details>`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal(result.changed, true);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 2);
+    assert.doesNotMatch(result.text, /<summary>Internal Thoughts:<\/summary>/);
+    assert.doesNotMatch(result.text, /<summary>World Sim<\/summary>/);
+    assert.match(result.text, /Internal Thoughts:\s*The armor is tough/);
+    assert.match(result.text, /World Sim\s*Roll: 9-Event: MEMORY_TRIGGER/);
+    assert.ok(result.actions.every((action) => action.type === 'flatten-unexpected-nested-details'));
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
+test('merges matching continuation details after a hierarchical panel', () => {
+    const registry = registryFrom(
+        internalStatesTemplate,
+        '<details><summary>🧠 INTERNAL THOUGHTS</summary>- [NPC] | Internal Thoughts: [thought]</details>',
+        '<details><summary>🌎 WORLD SIM</summary>- Active Table: [table]<br>- Roll: [roll]</details>',
+    );
+    const malformed = `<details><summary>🎬 INTERNAL STATES (Turn: 24)</summary>
+<details><summary>🧠 INTERNAL THOUGHTS</summary><br>-Xyl |</details>
+<details><summary>🌎 WORLD SIM</summary>-Active Table: Duo Table-</details></details>
+<details><summary>Internal Thoughts:</summary>The wall looks strong now.</details>
+<details><summary>World Sim</summary>Roll: 5-Event: MOOD_SWING</details>`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal(result.changed, true);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 3);
+    assert.doesNotMatch(result.text, /<summary>Internal Thoughts:<\/summary>/);
+    assert.doesNotMatch(result.text, /<summary>World Sim<\/summary>/);
+    assert.match(result.text, /<summary>🧠 INTERNAL THOUGHTS<\/summary>[\s\S]*Internal Thoughts:\s*The wall looks strong/);
+    assert.match(result.text, /<summary>🌎 WORLD SIM<\/summary>[\s\S]*World Sim\s*Roll: 5-Event: MOOD_SWING/);
+    assert.ok(result.actions.some((action) => action.type === 'merge-continuation-detail'));
     assert.equal(repairMessage(result.text, registry).changed, false);
 });
 
