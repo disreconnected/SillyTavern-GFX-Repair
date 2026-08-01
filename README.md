@@ -35,6 +35,9 @@ normal SillyTavern regex and Markdown pipeline runs.
 - Optional learned panels that were emitted inside the wrong parent are moved
   back to sibling panels (for example BONDS, CHEKHOV'S GUN, and INTERNAL
   THOUGHTS beside the main Internal States hierarchy).
+- Unexpected nested `<details>` blocks inside a learned leaf panel are
+  flattened into that panel's body (for example `World Sim` or `Internal
+  Thoughts:` sub-blocks).
 - Concatenated headings such as `INTERNAL STATES (Turn: 18)NPC AGENDAS`
   when the model omits line breaks.
 - Orphan, duplicated, or unclosed `details`/`summary` tags.

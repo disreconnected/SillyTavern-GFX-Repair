@@ -279,6 +279,27 @@ test('promotes optional panels after balancing an unclosed parent', () => {
     assert.equal(repairMessage(result.text, registry).changed, false);
 });
 
+test('flattens unexpected nested details inside learned leaf panels', () => {
+    const registry = registryFrom(
+        '<details><summary>🧠 INTERNAL THOUGHTS</summary>- [NPC] | Internal Thoughts: [thought]</details>',
+        '<details><summary>🌎 WORLD SIM</summary>- Active Table: [table]<br>- Roll: [roll]</details>',
+    );
+    const malformed = `<details><summary>🧠 INTERNAL THOUGHTS</summary><br>-Xyl |
+<details><summary>Internal Thoughts:</summary>The armor is tough. Tougher than ours.</details></details>
+<details><summary>🌎 WORLD SIM</summary>-Active Table: Duo Table-
+<details><summary>World Sim</summary>Roll: 9-Event: MEMORY_TRIGGER</details></details>`;
+    const result = repairMessage(malformed, registry);
+
+    assert.equal(result.changed, true);
+    assert.equal((result.text.match(/<details>/g) ?? []).length, 2);
+    assert.doesNotMatch(result.text, /<summary>Internal Thoughts:<\/summary>/);
+    assert.doesNotMatch(result.text, /<summary>World Sim<\/summary>/);
+    assert.match(result.text, /Internal Thoughts:\s*The armor is tough/);
+    assert.match(result.text, /World Sim\s*Roll: 9-Event: MEMORY_TRIGGER/);
+    assert.ok(result.actions.every((action) => action.type === 'flatten-unexpected-nested-details'));
+    assert.equal(repairMessage(result.text, registry).changed, false);
+});
+
 test('removes a Markdown fence around structural HTML', () => {
     const fenced = `Before
 
