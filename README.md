@@ -32,6 +32,9 @@ normal SillyTavern regex and Markdown pipeline runs.
 
 - Missing `<details>` and `<summary>` wrappers for learned preset panels.
 - Nested panels, including internal-state sections and optional panels.
+- Optional learned panels that were emitted inside the wrong parent are moved
+  back to sibling panels (for example BONDS, CHEKHOV'S GUN, and INTERNAL
+  THOUGHTS beside the main Internal States hierarchy).
 - Concatenated headings such as `INTERNAL STATES (Turn: 18)NPC AGENDAS`
   when the model omits line breaks.
 - Orphan, duplicated, or unclosed `details`/`summary` tags.
@@ -124,7 +127,9 @@ Repairs are registered at the earliest formatter stage before SillyTavern's
 regex scripts. The extension refreshes its template registry and queues a scan
 when chats, messages, swipes, or presets change. A short debounce prevents
 repeated events from causing repeated saves. Repairs are idempotent: rendering
-already-valid markup does not keep changing it.
+already-valid markup does not keep changing it. **Repair current chat now**
+also runs the same repair pass over stored assistant messages; it is not limited
+to newly generated replies.
 
 When a model joins a learned heading directly to the next heading or its first
 row, the repair engine restores those missing boundaries before applying the

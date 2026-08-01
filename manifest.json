@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Codex",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "minimum_client_version": "1.18.0",
     "auto_update": false
 }
