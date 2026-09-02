@@ -8,12 +8,11 @@ import {
 export default 'GfxDetailsRepair';
 
 const EXTENSION_KEY = 'gfxDetailsRepair';
-const EXTENSION_VERSION = '1.0.4';
+const EXTENSION_VERSION = '2.0.0';
 const context = SillyTavern.getContext();
 
 const defaultSettings = Object.freeze({
     enabled: true,
-    persistRepairs: true,
     repairGfx: true,
     repairDetails: true,
     detectionMode: 'safe-hybrid',
@@ -22,9 +21,6 @@ const defaultSettings = Object.freeze({
 });
 
 const registry = new TemplateRegistry();
-const pendingMessageIds = new Set();
-let pendingFullScan = false;
-let scanTimer = null;
 let settingsUiAdded = false;
 let lastStatus = 'Waiting for a chat.';
 let sessionRepairCount = 0;
@@ -44,6 +40,8 @@ function initializeSettings() {
             settings[key] = structuredClone(value);
         }
     }
+    // v1.x persisted automatic chat mutations; v2 is render-only unless explicitly triggered.
+    delete settings.persistRepairs;
 }
 
 function collectPresetTemplateSources() {
@@ -72,6 +70,13 @@ function collectPresetTemplateSources() {
         });
     }
     return sources;
+}
+
+function isEligibleAssistantMessage(message) {
+    return Boolean(message)
+        && !message.is_user
+        && !message.is_system
+        && typeof message.mes === 'string';
 }
 
 function collectChatTemplateSources() {
@@ -133,178 +138,90 @@ function currentRepairOptions() {
     };
 }
 
-function isEligibleAssistantMessage(message) {
-    return Boolean(message)
-        && !message.is_user
-        && !message.is_system
-        && typeof message.mes === 'string';
-}
-
-function formatterRepairHook(message, formattingContext) {
-    const settings = getSettings();
-    if (!settings.enabled
-        || formattingContext.isUser
-        || formattingContext.isSystem
-        || formattingContext.isReasoning) {
-        return message;
+/**
+ * Render-time repair: computes repaired text and patches the DOM directly.
+ * The chat message object is never touched, so no extension save can
+ * ever persist a repair into the chat file on disk.
+ */
+function repairRenderedMessage(messageId) {
+    const chat = context.chat ?? [];
+    const id = Number(messageId);
+    if (!getSettings().enabled || !Number.isInteger(id) || id < 0 || id >= chat.length) {
+        return;
     }
 
-    return repairMessage(message, registry, currentRepairOptions()).text;
-}
-
-function isStructuredDetails(details) {
-    const text = details.textContent || '';
-    const rows = text.match(/(?:^|\n)\s*[-*]\s+[^:\n]{1,100}:/g) ?? [];
-    return rows.length >= 3;
-}
-
-function annotateDetailsHook(html, formattingContext) {
-    const settings = getSettings();
-    if (!settings.enabled
-        || !settings.neutralFallback
-        || formattingContext.isUser
-        || formattingContext.isSystem
-        || formattingContext.isReasoning
-        || !/<details\b/i.test(html)) {
-        return html;
+    const message = chat[id];
+    if (!isEligibleAssistantMessage(message)) {
+        return;
     }
 
-    const template = document.createElement('template');
-    template.innerHTML = html;
-    for (const details of template.content.querySelectorAll('details')) {
+    const messageElement = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
+    if (!messageElement) {
+        return;
+    }
+
+    const result = repairMessage(message.mes, registry, currentRepairOptions());
+    if (!result.changed) {
+        return;
+    }
+
+    sessionRepairCount++;
+    // Render the repaired text through ST's own formatter and swap the DOM node.
+    // ponytail: string-DOM pairing by mesid is stable in ST 1.18; switch to
+    // context.updateMessageBlock if messages ever stop carrying mesid.
+    messageElement.innerHTML = context.messageFormatting(
+        result.text,
+        message.name,
+        message.is_system,
+        message.is_user,
+        id,
+        {},
+        false,
+    );
+    lastStatus = `Repaired message ${id} for display (${result.actions.length} action(s)).`;
+    updateSettingsStatus();
+}
+
+/**
+ * DOM pass: tags recognized panels for neutral fallback styling.
+ * Runs on the rendered chat element after messages exist.
+ */
+function annotateRenderedPanels() {
+    const settings = getSettings();
+    if (!settings.enabled || !settings.neutralFallback) {
+        return;
+    }
+
+    for (const details of document.querySelectorAll('#chat .mes_text details')) {
         const summary = [...details.children].find((element) => element.tagName === 'SUMMARY');
-        if (!summary) {
+        if (!summary || details.dataset.gfxRepairPanel === 'true') {
             continue;
         }
-
-        if (registry.matchesLabel(summary.textContent || '') || isStructuredDetails(details)) {
+        if (registry.matchesDomLabel(summary.textContent || '') || isStructuredDetails(details)) {
             details.dataset.gfxRepairPanel = 'true';
             for (const nested of details.querySelectorAll('details')) {
                 nested.dataset.gfxRepairPanel = 'true';
             }
         }
     }
-    return template.innerHTML;
 }
 
-function repairStoredString(value) {
-    if (typeof value !== 'string') {
-        return null;
-    }
-    return repairMessage(value, registry, currentRepairOptions());
-}
-
-function repairStoredMessage(message, messageIndex, { mutate }) {
-    if (!isEligibleAssistantMessage(message)) {
-        return { changed: false, repairs: 0, warnings: 0 };
-    }
-
-    let changed = false;
-    let repairs = 0;
-    let warnings = 0;
-    const actionTypes = new Set();
-
-    const mainResult = repairStoredString(message.mes);
-    if (mainResult?.changed) {
-        changed = true;
-        repairs += mainResult.actions.length;
-        warnings += mainResult.warnings.length;
-        mainResult.actions.forEach((action) => actionTypes.add(action.type));
-        if (mutate) {
-            message.mes = mainResult.text;
-        }
-    }
-
-    if (Array.isArray(message.swipes)) {
-        for (let index = 0; index < message.swipes.length; index++) {
-            const result = repairStoredString(message.swipes[index]);
-            if (!result?.changed) {
-                continue;
-            }
-            changed = true;
-            repairs += result.actions.length;
-            warnings += result.warnings.length;
-            result.actions.forEach((action) => actionTypes.add(action.type));
-            if (mutate) {
-                message.swipes[index] = result.text;
-            }
-        }
-    }
-
-    if (changed && mutate) {
-        message.extra ??= {};
-        message.extra.gfx_repair = {
-            version: EXTENSION_VERSION,
-            repaired_at: new Date().toISOString(),
-            message_index: messageIndex,
-            actions: [...actionTypes],
-        };
-    }
-
-    return { changed, repairs, warnings };
-}
-
-async function scanMessages(messageIds, { mutate = false, save = false } = {}) {
+/**
+ * Sweeps the whole rendered chat: repairs each assistant message for display,
+ * then annotates panels. Used when a chat loads or history streams in.
+ */
+function sweepRenderedChat() {
     refreshTemplateRegistry();
-    const chat = context.chat ?? [];
-    const ids = messageIds === 'all'
-        ? chat.map((_, index) => index)
-        : [...new Set(messageIds)].filter((id) => Number.isInteger(id) && id >= 0 && id < chat.length);
-
-    let changedMessages = 0;
-    let repairs = 0;
-    let warnings = 0;
-    for (const messageId of ids) {
-        const result = repairStoredMessage(chat[messageId], messageId, { mutate });
-        changedMessages += Number(result.changed);
-        repairs += result.repairs;
-        warnings += result.warnings;
+    for (let index = 0; index < (context.chat ?? []).length; index++) {
+        repairRenderedMessage(index);
     }
-
-    if (mutate && changedMessages > 0) {
-        sessionRepairCount += changedMessages;
-        refreshTemplateRegistry();
-        if (save) {
-            await context.saveChat();
-        }
-    }
-
-    lastStatus = changedMessages
-        ? `${mutate ? 'Repaired' : 'Found'} ${changedMessages} message(s), ${repairs} structural action(s), ${warnings} warning(s).`
-        : `No repairable structures found in ${ids.length} checked message(s).`;
-    updateSettingsStatus();
-    return { changedMessages, repairs, warnings };
+    annotateRenderedPanels();
 }
 
-async function flushQueuedScan() {
-    scanTimer = null;
-    const ids = pendingFullScan ? 'all' : [...pendingMessageIds];
-    pendingFullScan = false;
-    pendingMessageIds.clear();
-    if (!getSettings().enabled || !getSettings().persistRepairs) {
-        return;
-    }
-
-    try {
-        await scanMessages(ids, { mutate: true, save: true });
-    } catch (error) {
-        console.error('[GFX Repair] Failed to persist repairs:', error);
-        lastStatus = `Repair failed: ${error?.message || error}`;
-        updateSettingsStatus();
-    }
-}
-
-function queueScan(messageId = null, { full = false } = {}) {
-    if (full) {
-        pendingFullScan = true;
-    } else if (Number.isInteger(Number(messageId))) {
-        pendingMessageIds.add(Number(messageId));
-    }
-
-    if (scanTimer !== null) {
-        clearTimeout(scanTimer);
-    }
-    scanTimer = setTimeout(() => void flushQueuedScan(), 150);
+function isStructuredDetails(details) {
+    const text = details.textContent || '';
+    const rows = text.match(/(?:^|\n)\s*[-*]\s+[^:\n]{1,100}:/g) ?? [];
+    return rows.length >= 3;
 }
 
 function flattenTemplateLabels(node, depth = 0, output = []) {
@@ -389,13 +306,7 @@ function addSettingsUi() {
     const content = document.createElement('div');
     content.classList.add('inline-drawer-content');
     content.append(
-        createCheckbox('gfx_repair_enabled', 'Enable global repair', 'enabled', async (enabled) => {
-            if (enabled) {
-                refreshTemplateRegistry();
-                queueScan(null, { full: true });
-            }
-        }),
-        createCheckbox('gfx_repair_persist', 'Save structural repairs into chats', 'persistRepairs'),
+        createCheckbox('gfx_repair_enabled', 'Enable global repair', 'enabled'),
         createCheckbox('gfx_repair_gfx', 'Repair GFX fences and markers', 'repairGfx'),
         createCheckbox('gfx_repair_details', 'Repair details and summary panels', 'repairDetails'),
         createCheckbox('gfx_repair_fallback', 'Use neutral fallback styling when needed', 'neutralFallback'),
@@ -424,23 +335,29 @@ function addSettingsUi() {
     });
     content.append(modeLabel, mode);
 
+    const note = document.createElement('div');
+    note.classList.add('opacity70p');
+    note.textContent = 'Repairs are render-only: stored messages are never rewritten or saved automatically.';
+    content.append(note);
+
     const actions = document.createElement('div');
     actions.classList.add('gfx-repair-actions');
     actions.append(
         createButton('Preview current chat', async () => {
-            const result = await scanMessages('all', { mutate: false, save: false });
-            globalThis.toastr?.info(
-                `${result.changedMessages} message(s) would be repaired.`,
-                'GFX & Details Repair',
-            );
-        }),
-        createButton('Repair current chat now', async () => {
-            const result = await scanMessages('all', { mutate: true, save: true });
-            if (result.changedMessages > 0) {
-                await context.reloadCurrentChat();
+            refreshTemplateRegistry();
+            let wouldRepair = 0;
+            for (const [index, message] of (context.chat ?? []).entries()) {
+                if (!isEligibleAssistantMessage(message)) continue;
+                if (repairMessage(message.mes, registry, currentRepairOptions()).changed) {
+                    wouldRepair++;
+                }
             }
-            globalThis.toastr?.success(
-                `${result.changedMessages} message(s) repaired.`,
+            lastStatus = wouldRepair
+                ? `${wouldRepair} message(s) render-repaired this session.`
+                : 'No repairable structures found in assistant messages.';
+            updateSettingsStatus();
+            globalThis.toastr?.info(
+                `${wouldRepair} assistant message(s) need repair.`,
                 'GFX & Details Repair',
             );
         }),
@@ -473,39 +390,53 @@ function addSettingsUi() {
     updateSettingsStatus();
 }
 
-function registerFormatterHooks() {
-    const formatter = context.messageFormatter;
-    formatter.addHook(formatterRepairHook, {
-        stage: formatter.stage.BEFORE_REGEX,
-        order: formatter.order.EARLIEST,
-    });
-    formatter.addHook(annotateDetailsHook, {
-        stage: formatter.stage.AFTER_MARKDOWN,
-        order: formatter.order.LATEST,
-    });
-}
-
 function registerEventHandlers() {
     const events = context.eventTypes;
     const source = context.eventSource;
 
-    source.on(events.CHARACTER_MESSAGE_RENDERED, (messageId) => queueScan(messageId));
-    source.on(events.MESSAGE_EDITED, (messageId) => queueScan(messageId));
-    source.on(events.MESSAGE_UPDATED, (messageId) => queueScan(messageId));
-    source.on(events.MESSAGE_SWIPED, (messageId) => queueScan(messageId));
-    source.on(events.MORE_MESSAGES_LOADED, () => queueScan(null, { full: true }));
-    source.on(events.CHAT_CHANGED, () => queueScan(null, { full: true }));
-    source.on(events.CHAT_LOADED, () => queueScan(null, { full: true }));
-
-    const refreshForPreset = () => {
-        setTimeout(() => {
-            refreshTemplateRegistry();
-            queueScan(null, { full: true });
-        }, 50);
+    const guarded = (label, handler) => (...args) => {
+        try {
+            handler(...args);
+        } catch (error) {
+            // A repair failure must never break chat rendering.
+            console.error(`[GFX Repair] ${label} failed:`, error);
+        }
     };
+
+    source.on(events.CHARACTER_MESSAGE_RENDERED, guarded('render repair', (messageId) => {
+        repairRenderedMessage(messageId);
+        annotateRenderedPanels();
+    }));
+    source.on(events.MESSAGE_UPDATED, guarded('message update repair', (messageId) => {
+        repairRenderedMessage(messageId);
+        annotateRenderedPanels();
+    }));
+    source.on(events.MESSAGE_SWIPED, guarded('swipe repair', (messageId) => {
+        repairRenderedMessage(messageId);
+        annotateRenderedPanels();
+    }));
+    source.on(events.CHAT_CHANGED, guarded('chat change sweep', () => {
+        sessionRepairCount = 0;
+        // Messages may still be rendering; run after the current task.
+        setTimeout(guarded('chat change sweep (deferred)', sweepRenderedChat), 100);
+    }));
+    source.on(events.CHAT_LOADED, guarded('chat load sweep', () => {
+        setTimeout(guarded('chat load sweep (deferred)', sweepRenderedChat), 100);
+    }));
+    source.on(events.MORE_MESSAGES_LOADED, guarded('history sweep', () => {
+        sweepRenderedChat();
+    }));
+
+    const refreshForPreset = guarded('preset refresh', () => {
+        setTimeout(guarded('preset refresh (deferred)', refreshTemplateRegistry), 50);
+    });
+    source.on(events.MORE_MESSAGES_LOADED, guarded('history sweep', () => {
+        sweepRenderedChat();
+    }));
+
     source.on(events.PRESET_CHANGED, refreshForPreset);
     source.on(events.OAI_PRESET_CHANGED_AFTER, refreshForPreset);
-    source.on(events.APP_READY, addSettingsUi);
+    source.on(events.APP_READY, guarded('settings ui', addSettingsUi));
 }
 
 function initializeExtension() {
@@ -515,11 +446,9 @@ function initializeExtension() {
     globalThis.__gfxDetailsRepairLoaded = true;
 
     initializeSettings();
-    refreshTemplateRegistry();
-    registerFormatterHooks();
     registerEventHandlers();
     addSettingsUi();
-    queueScan(null, { full: true });
+    refreshTemplateRegistry();
     console.info(`[GFX Repair] Loaded v${EXTENSION_VERSION} with ${registry.roots.length} learned template(s).`);
 }
 

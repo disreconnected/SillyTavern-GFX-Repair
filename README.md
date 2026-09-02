@@ -105,9 +105,6 @@ The extension adds a **GFX & Details Repair** drawer under SillyTavern's
 Extensions panel.
 
 - **Enable global repair** — master switch for all presets and chats.
-- **Save structural repairs into chats** — enabled by default. Repaired text is
-  written back to the assistant message and chat saves include a small
-  `extra.gfx_repair` record. Disable this for render-only repairs.
 - **Repair GFX fences and markers** — repairs `GFX_START`/`GFX_END` and
   structural Markdown fences.
 - **Repair details and summary panels** — repairs learned and heuristic
@@ -122,24 +119,22 @@ Extensions panel.
   - **Aggressive headings**: also accepts weaker heading evidence and may wrap
     more unknown headings.
 
-The drawer also provides **Preview current chat**, **Repair current chat now**,
-and **Clear learned cache**. The detected template list and the latest scan
-status are shown there.
+The drawer also provides **Preview current chat** and **Clear learned cache**.
+The detected template list and the latest scan status are shown there.
 
 ## When repairs run
 
-Repairs are registered at the earliest formatter stage before SillyTavern's
-regex scripts. The extension refreshes its template registry and queues a scan
-when chats, messages, swipes, or presets change. A short debounce prevents
-repeated events from causing repeated saves. Repairs are idempotent: rendering
-already-valid markup does not keep changing it. **Repair current chat now**
-also runs the same repair pass over stored assistant messages; it is not limited
-to newly generated replies.
+Repairs are render-only. When an assistant message is rendered, the extension
+repairs its structure in memory and patches the displayed text through the
+standard SillyTavern re-render path. Stored chat files are never rewritten or
+saved automatically, so a repair can never corrupt a chat on disk; disabling or
+removing the extension always returns the chat to its exact stored state. If a
+repaired message is later saved (for example by an explicit user edit), the
+display text applies only to that message.
 
 When a model joins a learned heading directly to the next heading or its first
 row, the repair engine restores those missing boundaries before applying the
-usual learned template. This path is shared by new message rendering and the
-**Repair current chat now** action.
+usual learned template.
 
 ## Safety and limitations
 
@@ -176,7 +171,7 @@ repair, false-positive protection, and idempotence.
 
 ```text
 manifest.json                 SillyTavern extension metadata
-index.js                      Settings UI, hooks, event handling, persistence
+index.js                      Settings UI, event handling, render-time repair
 lib/repair-engine.js          Template discovery and pure repair functions
 style.css                     Settings and neutral fallback panel styles
 test/repair-engine.test.js    Node test suite

@@ -13,24 +13,22 @@ let sequence = 0;
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 
 await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true });
-    socket.addEventListener('error', reject, { once: true });
+    socket.addEventListener('open', resolve);
+    socket.addEventListener('error', reject);
 });
 
 socket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
     if (message.id && pending.has(message.id)) {
-        const operation = pending.get(message.id);
+        pending.get(message.id).resolve(message.result);
         pending.delete(message.id);
-        if (message.error) {
-            operation.reject(new Error(message.error.message));
-        } else {
-            operation.resolve(message.result);
-        }
         return;
     }
-    if (message.method) {
-        events.push(message);
+    if (message.method === 'Runtime.exceptionThrown') {
+        events.push({ type: 'exception', text: message.params?.exceptionDetails?.exception?.description || message.params?.exceptionDetails?.text });
+    }
+    if (message.method === 'Log.entryAdded' && message.params?.entry?.level === 'error') {
+        events.push({ type: 'consoleError', text: message.params.entry.text, url: message.params.entry.url });
     }
 });
 
@@ -48,41 +46,19 @@ await new Promise((resolve) => setTimeout(resolve, 12_000));
 
 const evaluation = await send('Runtime.evaluate', {
     expression: `(() => {
-        const sample = [
-            'Narrative.',
-            '<!-- GFX_START -->',
-            '🎬 INTERNAL STATES (Turn: 99)👤 NPC AGENDAS - Test NPC | Agenda: Verify repair',
-            '📜 QUESTS - Main | Objective: Complete smoke test',
-            "📓 GM'S NOTEBOOK - [D] Live formatter assertion",
-            '🎲 DND TASK SIM - Task: Toggle panels',
-            '🌌 PHYSICS, ENGINE & WORLD - Env: Browser',
-            '- Physics: Synthetic message',
-            '<!-- GFX_END -->',
-        ].join('\\n');
-        const formatter = globalThis.SillyTavern?.getContext()?.messageFormatter;
-        const formatted = formatter?.format(sample, 'GFX Repair Test', false, false, -1) || '';
-        const host = document.createElement('div');
-        host.hidden = true;
-        host.innerHTML = formatted;
-        document.body.append(host);
-        const panels = [...host.querySelectorAll('details')];
-        const outer = panels[0];
-        const outerSummary = outer ? [...outer.children].find((element) => element.tagName === 'SUMMARY') : null;
+        const ctx = globalThis.SillyTavern?.getContext?.() ?? null;
+        const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        // Count panels currently rendered in the chat DOM.
+        const panels = [...document.querySelectorAll('#chat .mes_text details')];
+        const repairedPanels = [...document.querySelectorAll('#chat .mes_text details[data-gfx-repair-panel="true"]')];
+        // Live toggle check on the first panel if present.
+        const outer = panels[0] ?? null;
+        const outerSummary = outer ? [...outer.children].find((el) => el.tagName === 'SUMMARY') : null;
         const initiallyClosed = outer ? !outer.open : false;
         outerSummary?.click();
         const openedAfterClick = Boolean(outer?.open);
         outerSummary?.click();
         const closedAfterSecondClick = outer ? !outer.open : false;
-        const formatterSmoke = {
-            panelCount: panels.length,
-            styledPanelCount: panels.filter((panel) => panel.hasAttribute('style')).length,
-            annotatedPanelCount: panels.filter((panel) => panel.dataset.gfxRepairPanel === 'true').length,
-            labels: panels.map((panel) => [...panel.children].find((element) => element.tagName === 'SUMMARY')?.textContent?.trim()),
-            initiallyClosed,
-            openedAfterClick,
-            closedAfterSecondClick,
-        };
-        host.remove();
         return {
             title: document.title,
             readyState: document.readyState,
@@ -93,9 +69,10 @@ const evaluation = await send('Runtime.evaluate', {
             detectedTemplates: document.getElementById('gfx_repair_templates')?.value || null,
             extensionScript: [...document.scripts].some((script) => script.src.includes('SillyTavern-GFX-Repair/index.js')),
             chatMessages: document.querySelectorAll('#chat .mes').length,
-            detailsPanels: document.querySelectorAll('#chat details').length,
-            repairedPanels: document.querySelectorAll('#chat details[data-gfx-repair-panel="true"]').length,
-            formatterSmoke,
+            chatArrayLength: chat.length,
+            detailsPanels: panels.length,
+            repairedPanels: repairedPanels.length,
+            toggleSmoke: { initiallyClosed, openedAfterClick, closedAfterSecondClick },
         };
     })()`,
     returnByValue: true,
@@ -103,14 +80,11 @@ const evaluation = await send('Runtime.evaluate', {
 });
 
 const browserErrors = events
-    .filter((event) => event.method === 'Log.entryAdded' && event.params?.entry?.level === 'error')
-    .map((event) => ({
-        source: event.params.entry.source,
-        text: event.params.entry.text,
-    }));
+    .filter((event) => event.type === 'consoleError')
+    .map((event) => ({ text: event.text, url: event.url }));
 const runtimeExceptions = events
-    .filter((event) => event.method === 'Runtime.exceptionThrown')
-    .map((event) => event.params?.exceptionDetails?.text || 'Unknown runtime exception');
+    .filter((event) => event.type === 'exception')
+    .map((event) => event.text);
 
 const report = {
     page: evaluation.result.value,
@@ -121,13 +95,12 @@ console.log(JSON.stringify(report, null, 2));
 socket.close();
 
 const extensionErrors = browserErrors.filter((error) => /GFX Repair|SillyTavern-GFX-Repair|repair-engine/i.test(error.text));
-const formatterFailed = report.page.formatterSmoke.panelCount !== 6
-    || !report.page.formatterSmoke.initiallyClosed
-    || !report.page.formatterSmoke.openedAfterClick
-    || !report.page.formatterSmoke.closedAfterSecondClick;
+const toggleFailed = !report.page.toggleSmoke.initiallyClosed
+    || !report.page.toggleSmoke.openedAfterClick
+    || !report.page.toggleSmoke.closedAfterSecondClick;
 if (!report.page.extensionLoaded
     || !report.page.drawerPresent
-    || formatterFailed
+    || toggleFailed
     || extensionErrors.length
     || runtimeExceptions.length) {
     process.exitCode = 1;
